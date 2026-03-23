@@ -1,0 +1,52 @@
+# gap_explorer:
+#   ros__parameters:
+#     search_linear_speed: 0.06
+#     search_turn_speed: 0.20
+
+#     approach_linear_speed: 0.05
+#     follow_linear_speed: 0.06
+#     angular_limit: 0.12
+#     turn_slowdown_threshold: 0.08
+#     turn_speed_scale: 0.80
+
+#     wall_target_distance: 0.30
+#     wall_distance_tolerance: 0.20
+#     front_blocked_m: 0.35
+#     front_slowdown_m: 0.55
+
+#     min_side_clearance_m: 0.22
+#     soft_side_clearance_m: 0.30
+
+#     min_segment_points: 18
+#     max_range_jump_m: 0.08
+#     min_segment_length_m: 0.60
+#     min_linear_density_pts_per_m: 18.0
+#     max_fit_rmse_m: 0.05
+#     max_candidate_range_m: 3.5
+
+#     orientation_lock_deg: 12.0
+#     orientation_refine_alpha: 0.15
+#     center_refine_alpha: 0.15
+#     extension_margin_m: 0.03
+#     clear_deviation_angle_deg: 18.0
+
+#     lookahead_m: 0.55
+#     map_buffer_m: 0.12
+#     occupancy_threshold: 50
+
+#     end_reach_margin_m: 0.28
+#     completed_segment_revisit_dist_m: 0.80
+#     completed_segment_revisit_angle_deg: 20.0
+
+#     probe_pause_sec: 3.0
+#     probe_turn_sec: 1.0
+#     probe_turn_speed: 0.20
+#     probe_cooldown_sec: 5.0
+
+#     map_done_unknown_fraction: 0.04
+
+#     k_dist: 0.45
+#     k_heading: 0.65
+#     k_end: 0.18
+
+#     debug_log: true
