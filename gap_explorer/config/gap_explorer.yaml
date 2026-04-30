@@ -1,0 +1,5 @@
+# gap_explorer parameter overrides.
+# All defaults are set via declare_parameter() in gap_explorer_node.py.
+# Uncomment and change values here to override without rebuilding.
+gap_explorer:
+  ros__parameters: {}

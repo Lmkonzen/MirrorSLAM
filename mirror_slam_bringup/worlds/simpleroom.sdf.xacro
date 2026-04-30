@@ -1,0 +1,246 @@
+<?xml version="1.0"?>
+<sdf version="1.9" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="headless" default="false"/>
+
+  <!-- Reusable wall macro -->
+  <xacro:macro name="box_wall" params="name x y z sx sy sz">
+    <collision name="${name}_collision">
+      <pose>${x} ${y} ${z} 0 0 0</pose>
+      <geometry>
+        <box><size>${sx} ${sy} ${sz}</size></box>
+      </geometry>
+    </collision>
+    <visual name="${name}_visual">
+      <pose>${x} ${y} ${z} 0 0 0</pose>
+      <geometry>
+        <box><size>${sx} ${sy} ${sz}</size></box>
+      </geometry>
+      <material>
+        <ambient>0.08 0.08 0.08 1</ambient>
+        <diffuse>0.12 0.12 0.12 1</diffuse>
+      </material>
+    </visual>
+  </xacro:macro>
+
+  <!-- Reusable pillar / feature macro -->
+  <xacro:macro name="feature_box" params="name x y z sx sy sz r g b">
+    <collision name="${name}_collision">
+      <pose>${x} ${y} ${z} 0 0 0</pose>
+      <geometry>
+        <box><size>${sx} ${sy} ${sz}</size></box>
+      </geometry>
+    </collision>
+    <visual name="${name}_visual">
+      <pose>${x} ${y} ${z} 0 0 0</pose>
+      <geometry>
+        <box><size>${sx} ${sy} ${sz}</size></box>
+      </geometry>
+      <material>
+        <ambient>${r} ${g} ${b} 1</ambient>
+        <diffuse>${r} ${g} ${b} 1</diffuse>
+      </material>
+    </visual>
+  </xacro:macro>
+
+  <world name="tb3_floorplan_room_simple">
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <xacro:unless value="$(arg headless)">
+      <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    </xacro:unless>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+
+    <scene>
+      <ambient>0.8 0.8 0.8 1</ambient>
+      <background>0.95 0.95 0.95 1</background>
+      <shadows>false</shadows>
+    </scene>
+
+    <light name="sun" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 -0.025 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>14.5 14.5 0.05</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>14.5 14.5 0.05</size></box>
+          </geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.94 0.94 0.94 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="floorplan_walls">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="walls_link">
+
+        <!-- =========================
+             Main simplified interior
+             ========================= -->
+
+        <!-- Left outer-ish main wall -->
+        <xacro:box_wall name="wall_left"
+                        x="-4.32" y="0.36" z="1.25"
+                        sx="0.32" sy="9.04" sz="2.5"/>
+
+        <!-- Bottom wall -->
+        <xacro:box_wall name="wall_bottom"
+                        x="1.04" y="-4.80" z="1.25"
+                        sx="6.56" sy="0.32" sz="2.5"/>
+
+        <!-- Right split walls -->
+        <xacro:box_wall name="wall_right_lower"
+                        x="4.36" y="-0.30" z="1.25"
+                        sx="0.24" sy="2.80" sz="2.5"/>
+
+        <xacro:box_wall name="wall_right_upper"
+                        x="4.36" y="3.96" z="1.25"
+                        sx="0.24" sy="1.84" sz="2.5"/>
+
+        <!-- Top walls -->
+        <xacro:box_wall name="wall_top_left"
+                        x="-0.40" y="4.76" z="1.25"
+                        sx="2.56" sy="0.24" sz="2.5"/>
+
+        <xacro:box_wall name="wall_top_right"
+                        x="3.52" y="4.76" z="1.25"
+                        sx="1.44" sy="0.24" sz="2.5"/>
+
+        <!-- Central structure -->
+        <xacro:box_wall name="wall_mid_left_h"
+                        x="-2.80" y="-0.36" z="1.25"
+                        sx="2.72" sy="0.24" sz="2.5"/>
+
+        <xacro:box_wall name="wall_mid_left_v"
+                        x="-1.48" y="0.72" z="1.25"
+                        sx="0.24" sy="1.92" sz="2.5"/>
+
+        <xacro:box_wall name="wall_mid_top_h"
+                        x="-0.20" y="2.88" z="1.25"
+                        sx="1.52" sy="0.16" sz="2.5"/>
+
+        <xacro:box_wall name="wall_mid_top_v"
+                        x="0.64" y="3.72" z="1.25"
+                        sx="0.16" sy="1.84" sz="2.5"/>
+
+        <xacro:box_wall name="wall_lower_center_h"
+                        x="0.48" y="-2.68" z="1.25"
+                        sx="1.76" sy="0.24" sz="2.5"/>
+
+        <xacro:box_wall name="wall_lower_center_v"
+                        x="1.28" y="-3.12" z="1.25"
+                        sx="0.16" sy="0.64" sz="2.5"/>
+
+        <xacro:box_wall name="wall_lower_left_h"
+                        x="-2.88" y="-2.32" z="1.25"
+                        sx="2.56" sy="0.16" sz="2.5"/>
+
+        <xacro:box_wall name="wall_lower_left_v"
+                        x="-0.32" y="-3.72" z="1.25"
+                        sx="0.16" sy="1.84" sz="2.5"/>
+
+        <xacro:box_wall name="wall_right_mid_h"
+                        x="2.72" y="-1.52" z="1.25"
+                        sx="3.04" sy="0.16" sz="2.5"/>
+
+        <!-- =========================
+             Outer containment walls
+             ========================= -->
+
+        <xacro:box_wall name="outer_wall_north"
+                        x="0" y="7.15" z="1.25"
+                        sx="14.5" sy="0.2" sz="2.5"/>
+
+        <xacro:box_wall name="outer_wall_south"
+                        x="0" y="-7.15" z="1.25"
+                        sx="14.5" sy="0.2" sz="2.5"/>
+
+        <xacro:box_wall name="outer_wall_east"
+                        x="7.15" y="0" z="1.25"
+                        sx="0.2" sy="14.5" sz="2.5"/>
+
+        <xacro:box_wall name="outer_wall_west"
+                        x="-7.15" y="0" z="1.25"
+                        sx="0.2" sy="14.5" sz="2.5"/>
+
+        <!-- =========================
+             SLAM helper features
+             Inside outer walls, outside main layout
+             Asymmetric placement helps scan matching
+             ========================= -->
+
+        <!-- Pillars -->
+        <xacro:feature_box name="slam_pillar_nw"
+                           x="-5.8" y="5.6" z="0.9"
+                           sx="0.35" sy="0.35" sz="1.8"
+                           r="0.25" g="0.25" b="0.25"/>
+
+        <xacro:feature_box name="slam_pillar_ne"
+                           x="5.4" y="5.1" z="0.9"
+                           sx="0.45" sy="0.30" sz="1.8"
+                           r="0.22" g="0.22" b="0.22"/>
+
+        <xacro:feature_box name="slam_pillar_sw"
+                           x="-5.2" y="-5.7" z="0.9"
+                           sx="0.30" sy="0.50" sz="1.8"
+                           r="0.20" g="0.20" b="0.20"/>
+
+        <xacro:feature_box name="slam_pillar_se"
+                           x="5.9" y="-5.0" z="0.9"
+                           sx="0.40" sy="0.40" sz="1.8"
+                           r="0.28" g="0.28" b="0.28"/>
+
+        <!-- Short divider walls in buffer zone -->
+        <xacro:feature_box name="slam_divider_east"
+                           x="5.7" y="1.4" z="1.0"
+                           sx="0.20" sy="1.80" sz="2.0"
+                           r="0.18" g="0.18" b="0.18"/>
+
+        <xacro:feature_box name="slam_divider_west"
+                           x="-5.6" y="-1.8" z="1.0"
+                           sx="1.60" sy="0.20" sz="2.0"
+                           r="0.18" g="0.18" b="0.18"/>
+
+        <!-- One small off-center block to break symmetry -->
+        <xacro:feature_box name="slam_block_north"
+                           x="1.8" y="5.9" z="0.75"
+                           sx="0.60" sy="0.45" sz="1.5"
+                           r="0.30" g="0.30" b="0.30"/>
+
+      </link>
+    </model>
+  </world>
+</sdf>

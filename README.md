@@ -1,98 +1,52 @@
-Commit Hash ID: bf0c28d05498f254ff0d713c05455c9d60d51ce5
 # MirrorSLAM
 
-A ROS2 (Jazzy) system that drives a Kobuki base through an unknown space,
-follows walls using a Unitree L1 3D lidar, and uses a UR3e arm to physically
-probe surfaces. If the arm's motion fails (indicating a hard/reflective surface
-like a mirror), the location is stored permanently and injected into the Nav2
-costmap so the robot avoids it on future passes.
+A ROS2 system that drives a TurtleBot through an unknown space, follows walls
+using lidar, and uses a UR3e arm to physically probe surfaces. If the arm's
+motion fails (indicating a mirror or hard surface), the location is injected
+into the Nav2 costmap so the robot avoids it on future passes.
 
 ## Architecture
 
 | Package | Role |
 |---|---|
-| `gap_explorer` | Robot brain — wall detection, Nav2 client, 5-state machine |
+| `gap_explorer` | TurtleBot brain — wall detection, Nav2 client, 5-state machine |
 | `ur3` | UR3e action server — receives `ProbeArm` goals, executes home→poke→home |
 | `gap_explorer_interfaces` | Shared `ProbeArm.action` definition |
-| `mirror_slam_bringup` | Launch files, Nav2 params, world files, custom RTAB-Map launch |
-
-### Pipeline
-
-```
-Unitree L1 (3D PointCloud2 + IMU)
-    ↓
-RTAB-Map (lidar3d_assemble, custom launch)
-    ↓ /odom + odom→base_link TF
-    ↓ /map  + map→odom  TF
-    ↓ /assembled_cloud (denser merged cloud)
-    ↓
-pointcloud_to_laserscan (slice from assembled cloud)
-    ↓ /unilidar/scan
-    ↓
-Nav2 (planner, controller, costmaps)
-    ↓ /cmd_vel
-topic_tools relay
-    ↓ /commands/velocity
-Kobuki (motor base, listens over LAN)
-
-UR3e (UR driver + MoveIt + arm probe action server)
-    ↓ probes walls when gap_explorer transitions to PROBE state
-```
+| `mirror_slam_bringup` | Nav2 params, world files, launch files |
+| `scripts/` | Bridge scripts and TurtleBot setup automation |
 
 ### State machine (gap_explorer)
 
 `COLLECT` → `NAV` → `SETTLE` → `FOLLOW` → `PROBE` → `COLLECT`
 
-The robot collects lidar scans, fits wall segments by PCA, navigates to the
-nearest unvisited wall, follows it to the endpoint, then triggers the arm probe.
-A failed poke stores the wall as a detected mirror and marks it permanently in
-the Nav2 costmap so the robot routes around it on future passes.
+### Network architecture
 
-### TF tree note
+```
+┌─────────────────────────────────┐         ┌──────────────────────────┐
+│           LAPTOP (Jazzy)        │         │   TURTLEBOT (Foxy)       │
+│                                 │  WiFi   │                          │
+│  rosbridge :9090  ◄─────────────┼────────►│  cmd_vel_bridge.py       │
+│  gap_explorer                   │         │  lidar_bridge.py         │
+│  SLAM / Nav2                    │         │  Unitree L1 lidar        │
+│  MoveIt + UR3e (sim or real)    │         │  Kobuki base             │
+│  RViz                           │         │                          │
+└─────────────────────────────────┘         └──────────────────────────┘
 
-The UR driver's URDF roots the arm chain at `base_link_inertia`, not
-`base_link`, so the arm and mobile base coexist in the same TF tree without
-collision. The full chain is `map → odom → base_link_stabilized → base_link →
-{unilidar_lidar, base_link_inertia → ... → tool0}`.
+Laptop → /commands/velocity → TurtleBot (drive commands)
+TurtleBot → /unilidar/cloud, /unilidar/imu → Laptop (lidar data)
+```
+
+### Machines
+
+| Machine | IP | ROS2 |
+|---|---|---|
+| Laptop | 10.5.15.42 | Jazzy |
+| turtle-one | 10.5.12.184 | Foxy |
+| UR3e arm | 10.3.4.10 | — |
 
 ---
 
-## Dependencies
-
-```bash
-sudo apt install ros-jazzy-nav2-bringup ros-jazzy-rtabmap-examples \
-    ros-jazzy-rtabmap-launch ros-jazzy-pointcloud-to-laserscan \
-    ros-jazzy-topic-tools ros-jazzy-kobuki-node \
-    ros-jazzy-ur-robot-driver ros-jazzy-ur-moveit-config \
-    ros-jazzy-moveit ros-jazzy-turtlebot3-gazebo
-```
-
-Optional permanent fix for lidar USB permissions:
-
-```bash
-sudo usermod -aG dialout $USER
-# log out and back in
-```
-
-If you skip the dialout group, run `sudo chmod 666 /dev/ttyUSB0` before
-each launch.
-
-### CycloneDDS participant limit (Jazzy)
-
-This stack runs many nodes simultaneously. Cyclone DDS on Jazzy caps the
-participant index, which causes new nodes to fail with
-`Failed to find a free participant index for domain 1`. Fix once by adding
-to `~/.bashrc`:
-
-```bash
-export CYCLONEDDS_URI='<CycloneDDS><Domain Id="any"><Discovery><ParticipantIndex>none</ParticipantIndex></Discovery></Domain></CycloneDDS>'
-```
-
-Then `source ~/.bashrc`. Every new terminal inherits this.
-
----
-
-## Build
+## Build (laptop)
 
 ```bash
 cd ~/ros2_ws
@@ -103,278 +57,260 @@ source install/setup.bash
 
 ---
 
-## Full system bringup
+## New TurtleBot Setup
 
-The full system runs as three independent stages, in this order.
+One-time setup for a fresh TurtleBot. This installs the lidar package,
+bridge scripts, udev rules, and disables lid-close suspend.
 
-### Stage 1 — UR3e arm (sim mode)
-
-Bring up the arm first. The arm subsystem is independent of the navigation
-stack and easier to validate on its own.
-
-#### Terminal 1 — UR3e driver
+### From the laptop:
 
 ```bash
-ros2 launch ur_robot_driver ur_control.launch.py \
-    ur_type:=ur3e \
-    use_mock_hardware:=true \
-    robot_ip:=0.0.0.0 \
-    launch_rviz:=false
+# Get your laptop IP
+ip addr show wlp3s0 | grep "inet "
+
+# Copy the setup script to the TurtleBot
+scp ~/ros2_ws/src/Mirror_SLAM/scripts/setup_turtlebot.sh <user>@<TB_IP>:~/
+
+# SSH in and run it
+ssh <user>@<TB_IP>
+chmod +x ~/setup_turtlebot.sh
+./setup_turtlebot.sh <LAPTOP_IP>
 ```
 
-#### Terminal 2 — MoveIt + RViz
+For turtle-one specifically:
 
 ```bash
-ros2 launch ur_moveit_config ur_moveit.launch.py \
-    ur_type:=ur3e \
-    use_mock_hardware:=true \
-    launch_rviz:=true \
-    warehouse_sqlite_path:=$HOME/.ros/warehouse_ros.db
+scp ~/ros2_ws/src/Mirror_SLAM/scripts/setup_turtlebot.sh turtle-one@10.5.12.184:~/
+ssh turtle-one@10.5.12.184
+chmod +x ~/setup_turtlebot.sh
+./setup_turtlebot.sh 10.5.15.42
 ```
 
-Wait for `"You can start planning now!"`.
+The script handles everything: lidar build, bridge scripts, serial symlinks,
+sleep disable. After it finishes, the TurtleBot is ready.
 
-#### Terminal 3 — Arm probe action server
+### If the laptop IP changes:
+
+Re-run the setup script with the new IP, or manually edit both files:
 
 ```bash
-ros2 run ur3 probe_server
+nano ~/ros_bridge/cmd_vel_bridge.py   # change LAPTOP_IP
+nano ~/ros_bridge/lidar_bridge.py     # change LAPTOP_IP
 ```
-
-Wait for `"probe_arm action server ready."`.
-
-#### Optional — Test goal
-
-To confirm the arm responds before continuing:
-
-```bash
-ros2 action send_goal --feedback /probe_arm \
-    gap_explorer_interfaces/action/ProbeArm "{}"
-```
-
-Feedback states: `homing` → `poking` → `returning` → `done`. If you see all
-four, the arm subsystem is good.
-
-### Stage 2 — Robot bringup (lidar + RTAB-Map + Nav2)
-
-Brings up the entire navigation stack: Unitree lidar, RTAB-Map SLAM,
-pointcloud_to_laserscan, Nav2, RViz, and the cmd_vel relay.
-
-The Kobuki itself must already be running on its onboard computer over
-SSH (see Kobuki section below).
-
-```bash
-sudo chmod 666 /dev/ttyUSB0    # only if you skipped the dialout group fix
-cd ~/ros2_ws && source install/setup.bash
-ros2 launch mirror_slam_bringup mirror_slam_full.launch.py
-```
-
-Stages launch in sequence with TimerAction delays:
-
-| T+   | Stage                                                       |
-|------|-------------------------------------------------------------|
-| 0s   | Unitree lidar driver, cmd_vel → Kobuki relay                |
-| 5s   | RTAB-Map (custom launch with `Grid/MaxObstacleHeight=1.5`)  |
-| 10s  | pointcloud_to_laserscan (slices `/assembled_cloud`)         |
-| 15s  | Nav2 (no SLAM; RTAB-Map provides `/map` and TF)             |
-| 20s  | RViz with Nav2 config                                       |
-
-After ~20 seconds RViz opens with Fixed Frame = `map`. Use the **Nav2 Goal**
-button in the toolbar to manually send a navigation goal and verify the
-stack drives the robot.
-
-#### Kobuki (over SSH on the robot computer)
-
-In a tmux session on the Kobuki's onboard machine:
-
-```bash
-ros2 launch kobuki_node kobuki_node-launch.py
-```
-
-That's it on the robot side. The cmd_vel relay runs on the laptop.
-
-### Stage 3 — gap_explorer wall-follower
-
-Once Stage 1 (arm) and Stage 2 (nav stack) are both up and verified, launch
-the brain:
-
-```bash
-ros2 run gap_explorer gap_explorer \
-    --ros-args -p scan_topic:=/unilidar/scan
-```
-
-The robot will start wall-following autonomously. When it reaches the end
-of a detected wall, it transitions to `PROBE` state and sends a
-`ProbeArm` goal to the arm action server (Stage 1). A successful probe
-moves on; a failed probe marks the wall as a mirror and stores it in
-the Nav2 costmap so the robot avoids it on future passes.
 
 ---
 
-## Stage 2 piecewise (debugging)
+# Launch Sequence
 
-If you want to run each Stage 2 component in its own terminal for
-debugging — easier to iterate on a single component without restarting the
-world. Sequence matters; each stage depends on the previous.
-
-### Terminal 1 — Unitree lidar driver
+## Step 1 — Laptop: start rosbridge
 
 ```bash
-sudo chmod 666 /dev/ttyUSB0
-source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
+# Laptop Terminal 1
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+Leave running. All bridges share this single WebSocket on port 9090.
+
+---
+
+## Step 2 — TurtleBot: start all robot-side processes (4 SSH sessions)
+
+```bash
+# SSH Terminal 1 — Unitree lidar
+ssh turtle-one@10.5.12.184
+source /opt/ros/foxy/setup.bash
+source ~/unilidar_sdk/unitree_lidar_ros2/install/setup.bash
 ros2 launch unitree_lidar_ros2 launch.py
 ```
 
-### Terminal 2 — cmd_vel → Kobuki bridge
-
 ```bash
-source /opt/ros/jazzy/setup.bash
-ros2 run topic_tools relay /cmd_vel /commands/velocity
+# SSH Terminal 2 — Lidar bridge (TB → laptop)
+ssh turtle-one@10.5.12.184
+source /opt/ros/foxy/setup.bash
+source ~/unilidar_sdk/unitree_lidar_ros2/install/setup.bash
+python3 ~/ros_bridge/lidar_bridge.py
 ```
 
-### Terminal 3 — RTAB-Map (custom launch)
-
 ```bash
-source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch mirror_slam_bringup lidar3d_assemble_custom.launch.py \
-    lidar_topic:=/unilidar/cloud \
-    imu_topic:=/unilidar/imu \
-    frame_id:=base_link
+# SSH Terminal 3 — Cmd vel bridge (laptop → TB)
+ssh turtle-one@10.5.12.184
+source /opt/ros/foxy/setup.bash
+python3 ~/ros_bridge/cmd_vel_bridge.py
 ```
 
-This custom launch is a copy of `rtabmap_examples/lidar3d_assemble.launch.py`
-with `Grid/MaxObstacleHeight=1.5` and `Grid/MaxGroundHeight=0.1` injected into
-the rtabmap node's parameters. The upstream version offers no way to set these
-through launch arguments. The custom launch also publishes the
-`base_link → unilidar_lidar` static TF internally.
-
-### Terminal 4 — pointcloud_to_laserscan
-
 ```bash
-source /opt/ros/jazzy/setup.bash
-ros2 run pointcloud_to_laserscan pointcloud_to_laserscan_node \
-    --ros-args \
-    -r cloud_in:=/assembled_cloud \
-    -r scan:=/unilidar/scan \
-    -p target_frame:=base_link \
-    -p min_height:=-0.1 \
-    -p max_height:=0.5 \
-    -p range_min:=0.01 \
-    -p range_max:=20.0
-```
-
-### Terminal 5 — Nav2 (no SLAM)
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch nav2_bringup navigation_launch.py \
-    params_file:=$HOME/ros2_ws/src/Mirror_SLAM/mirror_slam_bringup/params/nav2_params.yaml \
-    autostart:=True
-```
-
-### Terminal 6 — RViz
-
-```bash
-source /opt/ros/jazzy/setup.bash
-ros2 launch nav2_bringup rviz_launch.py
+# SSH Terminal 4 — Kobuki base
+ssh turtle-one@10.5.12.184
+source /opt/ros/foxy/setup.bash
+source ~/kobuki_ws_2/install/setup.bash
+ros2 launch kobuki_node kobuki_node-launch.py device_port:=/dev/kobuki
 ```
 
 ---
 
-## Sanity checks
-
-After the stack is up:
+## Step 3 — Laptop: verify bridge
 
 ```bash
-ros2 topic info /odom --verbose                  # publisher: rtabmap
-ros2 topic hz /assembled_cloud                   # ~1 Hz
-ros2 topic hz /unilidar/scan                     # matches assembled rate
-ros2 topic hz /map                               # ~1 Hz on update
-ros2 run tf2_ros tf2_echo map base_link          # full TF chain works
-ros2 run tf2_ros tf2_echo base_link tool0        # arm chain reachable
-ros2 lifecycle get /bt_navigator                 # active [3]
-ros2 lifecycle get /controller_server            # active [3]
-ros2 param get /rtabmap Grid/MaxObstacleHeight   # 1.5
-ros2 action list | grep probe_arm                # /probe_arm
+# Laptop Terminal 2
+ros2 topic list | grep -E "unilidar|commands"
 ```
+
+Expected:
+
+```
+/commands/velocity
+/unilidar/cloud
+/unilidar/imu
+```
+
+Quick drive test:
+
+```bash
+ros2 topic pub --once /commands/velocity geometry_msgs/msg/Twist \
+  "{linear: {x: 0.05}, angular: {z: 0.0}}"
+```
+
+The Kobuki should twitch forward.
 
 ---
 
-# Standalone test modes
+## Step 4 — Laptop: start UR3e arm
 
-These are run **independently** of each other and the main pipeline. Kill any
-running ROS2 processes first:
+Choose **one** of the two options below.
 
-```bash
-pkill -f ros2; pkill -f gazebo; pkill -f gz
-ros2 daemon stop && ros2 daemon start
-```
-
-## Sim Mode B — TurtleBot3 simulation (legacy)
-
-Tests gap_explorer wall-following in Gazebo. Does not include the arm or the
-RTAB-Map/Unitree pipeline. Predates the Kobuki + Unitree hardware switch.
-
-### Terminal 1 — TB3 sim + Nav2 + SLAM
+### Terminal 3.1 — Simulated arm (mock hardware)
 
 ```bash
+# Laptop Terminal 3
 cd ~/ros2_ws && source install/setup.bash
-ros2 launch nav2_bringup tb3_simulation_launch.py \
-    world:=$HOME/ros2_ws/src/Mirror_SLAM/mirror_slam_bringup/worlds/simpleroom.sdf.xacro \
-    x_pose:=2.0 y_pose:=0.0 z_pose:=0.1 \
-    slam:=True headless:=True
+ros2 launch ur_robot_driver ur_control.launch.py \
+    ur_type:=ur3e use_mock_hardware:=true robot_ip:=0.0.0.0 \
+    launch_rviz:=false
 ```
 
-Wait for `"Managed nodes are active"`.
-
-### Terminal 2 — Gap explorer
+### Terminal 3.2 — Real arm
 
 ```bash
-cd ~/ros2_ws && source install/setup.bash
-ros2 run gap_explorer gap_explorer --ros-args -p use_sim_time:=true
-```
-
----
-
-## Real arm hardware
-
-Run the UR3e on actual hardware. Same as Stage 1 but without
-`use_mock_hardware:=true`.
-
-### Terminal 1 — UR3e driver
-
-```bash
+# Laptop Terminal 3
 cd ~/ros2_ws && source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
     ur_type:=ur3e robot_ip:=10.3.4.10 launch_rviz:=false
 ```
 
-Start the `external_control` URCap program from the teach pendant.
+Then start the External Control URCap from the teach pendant.
 
-### Terminal 2 — MoveIt + RViz
+---
+
+## Step 5 — Laptop: start MoveIt
+
+Same for both sim and real:
 
 ```bash
+# Laptop Terminal 4
 cd ~/ros2_ws && source install/setup.bash
 ros2 launch ur_moveit_config ur_moveit.launch.py \
-    ur_type:=ur3e launch_rviz:=true
+    ur_type:=ur3e launch_rviz:=true \
+    warehouse_sqlite_path:=$HOME/.ros/warehouse_ros.db
 ```
 
 Wait for `"You can start planning now!"`.
 
-### Terminal 3 — Arm probe server
+---
+
+## Step 6 — Laptop: start probe server
 
 ```bash
+# Laptop Terminal 5
 cd ~/ros2_ws && source install/setup.bash
 ros2 run ur3 probe_server
 ```
 
-### Trigger a probe
+Wait for `"probe_arm action server ready."`.
+
+Optional — test the arm manually:
 
 ```bash
 ros2 action send_goal --feedback /probe_arm \
     gap_explorer_interfaces/action/ProbeArm "{}"
+```
+
+Expected feedback: `homing` → `poking` → `returning` → `done`
+
+---
+
+## Step 7 — Laptop: start SLAM / Nav2
+
+```bash
+# Laptop Terminal 6
+cd ~/ros2_ws && source install/setup.bash
+ros2 launch mirror_slam_bringup mirror_slam_full.launch.py
+```
+
+Wait for Nav2 to come up. Verify:
+
+```bash
+ros2 lifecycle get /bt_navigator       # should be: active [3]
+ros2 lifecycle get /controller_server   # should be: active [3]
+```
+
+Test with a manual Nav2 goal in RViz before starting autonomy.
+
+---
+
+## Step 8 — Laptop: start gap_explorer
+
+```bash
+# Laptop Terminal 7
+cd ~/ros2_ws && source install/setup.bash
+ros2 run gap_explorer gap_explorer --ros-args -p scan_topic:=/unilidar/scan
+```
+
+Expected log sequence:
+
+```
+COLLECT → NAV → SETTLE → FOLLOW → PROBE → COLLECT
+```
+
+The robot will autonomously explore, follow walls, and probe surfaces.
+
+---
+
+## Velocity topic relay
+
+The Kobuki listens on `/commands/velocity`. If gap_explorer or Nav2 publishes
+on `/cmd_vel`, relay it:
+
+```bash
+ros2 run topic_tools relay /cmd_vel /commands/velocity
+```
+
+If your launch file already includes this relay, do not start a duplicate.
+
+---
+
+## Shutdown order
+
+Stop in reverse:
+
+1. gap_explorer
+2. SLAM / Nav2
+3. Probe server
+4. MoveIt
+5. UR3e driver
+6. Kobuki base (SSH)
+7. Command bridge (SSH)
+8. Lidar bridge (SSH)
+9. Unitree lidar (SSH)
+10. rosbridge (laptop)
+
+Use `Ctrl-C` in each terminal.
+
+Nuclear reset:
+
+```bash
+# Laptop
+pkill -f ros2; pkill -f rosbridge; pkill -f gazebo; pkill -f gz
+ros2 daemon stop && ros2 daemon start
 ```
 
 ---
@@ -382,36 +318,58 @@ ros2 action send_goal --feedback /probe_arm \
 ## Useful commands
 
 ```bash
-# Kill everything and reset before a fresh launch
-pkill -f ros2; pkill -f gazebo; pkill -f gz
-ros2 daemon stop && ros2 daemon start
+# View TF tree
+ros2 run tf2_tools view_frames
 
-# Wipe RTAB-Map's database (forces fresh map on next launch)
-rm ~/.ros/rtabmap.db
-
-# View the full TF tree
-cd /tmp && ros2 run tf2_tools view_frames && xdg-open /tmp/frames.pdf
-
-# Check Nav2 lifecycle states
-ros2 lifecycle get /bt_navigator
-ros2 lifecycle get /controller_server
-ros2 lifecycle get /planner_server
-
-# Confirm Nav2 is accepting goals
-ros2 action list | grep navigate
-
-# Confirm arm probe server is up
-ros2 action list | grep probe_arm
-
-# Watch mirror detections live
-ros2 topic echo /detected_mirrors
-
-# Check controllers are active (UR3e)
+# Check controllers
 ros2 control list_controllers
 
-# Inspect the current map's RTAB-Map params
-rtabmap-info ~/.ros/rtabmap.db | grep -i grid
+# Monitor lidar rate
+ros2 topic hz /unilidar/cloud
 
-# Confirm CycloneDDS env var is set in the current shell
-echo $CYCLONEDDS_URI
+# Check Nav2 status
+ros2 action list | grep navigate
+
+# Watch mirror detections
+ros2 topic echo /detected_mirrors
+
+# Check probe action server
+ros2 action list | grep probe_arm
+
+# Debug velocity flow
+ros2 topic echo /cmd_vel
+ros2 topic echo /commands/velocity
 ```
+
+---
+
+## Troubleshooting
+
+**Rosbridge "Address already in use":**
+`pkill -f rosbridge` then relaunch.
+
+**No lidar topics on laptop:**
+Check: (1) rosbridge running on laptop, (2) lidar node running on TB,
+(3) lidar_bridge.py running on TB, (4) correct laptop IP in bridge script.
+
+**Kobuki doesn't move:**
+Check `ros2 topic echo /commands/velocity` on laptop. Verify cmd_vel_bridge.py
+and Kobuki node are both running on TB.
+
+**Serial permission denied on TB:**
+`sudo chmod 666 /dev/ttyUSB*` or verify udev rules: `ls -l /dev/lidar /dev/kobuki`
+
+**Serial ports swapped after reboot:**
+Use `/dev/lidar` and `/dev/kobuki` symlinks instead of `/dev/ttyUSBx`.
+
+**Arm driver timeout (real hardware):**
+The 1-second RTDE timeout is hardcoded. Requires low-latency connection.
+Direct ethernet preferred. WiFi works intermittently.
+
+**Nav2 goal succeeds but FOLLOW doesn't move:**
+Check `ros2 topic echo /cmd_vel` during FOLLOW. If empty, gap_explorer may
+be aborting. Check logs for `FOLLOW step:` debug messages.
+
+**TurtleBot sleeps with lid closed:**
+Re-run `setup_turtlebot.sh` or manually edit `/etc/systemd/logind.conf`
+and `sudo systemctl mask sleep.target suspend.target`.
