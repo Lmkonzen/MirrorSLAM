@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 """
-MirrorSLAM full bringup (laptop side).
+Laptop-side bringup: lidar driver, RTAB-Map, Nav2, RViz, optional gap_explorer.
+TimerActions sequence each stage so its dependencies are up by the time it
+starts. Kobuki base runs separately on the robot SBC over SSH (see README).
 
-Mirrors the documented manual terminal sequence as a single launch file with
-TimerAction delays to sequence dependencies. Each stage waits for the previous
-to settle before starting.
-
-Assumes Kobuki is launched separately on the robot's onboard computer over SSH.
-
-Usage:
   ros2 launch mirror_slam_bringup mirror_slam_full.launch.py
-
-Optional:
   ros2 launch mirror_slam_bringup mirror_slam_full.launch.py gap_explorer:=true
 """
 
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     TimerAction,
-    GroupAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -31,65 +22,49 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # -------------------------------------------------------------------------
-    # Launch arguments
-    # -------------------------------------------------------------------------
     gap_explorer_arg = DeclareLaunchArgument(
         'gap_explorer',
         default_value='false',
         description='Set true to launch gap_explorer wall-follower.',
     )
 
-    # -------------------------------------------------------------------------
-    # Paths
-    # -------------------------------------------------------------------------
-    nav2_bringup_share = FindPackageShare('nav2_bringup')
+    nav2_bringup_share  = FindPackageShare('nav2_bringup')
     unitree_lidar_share = FindPackageShare('unitree_lidar_ros2')
-    # CHANGE 1: removed rtabmap_examples_share — we use our custom launch now
-    mirror_slam_share = FindPackageShare('mirror_slam_bringup')
+    mirror_slam_share   = FindPackageShare('mirror_slam_bringup')
 
     nav2_params_file = PathJoinSubstitution([
         mirror_slam_share, 'params', 'nav2_params.yaml'
     ])
 
-    # -------------------------------------------------------------------------
-    # T+0s — Unitree lidar driver
-    # NOTE: This launch file cannot run `sudo chmod 666 /dev/ttyUSB0`.
-    # Either run it manually before launching, or add yourself to dialout group:
-    #   sudo usermod -aG dialout $USER  (then log out and back in)
-    # -------------------------------------------------------------------------
+    # ---- Unitree L1 driver ----
+    # Permission denied on /dev/ttyUSB0? add yourself to dialout and re-login:
+    #   sudo usermod -aG dialout $USER
     unitree_lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([unitree_lidar_share, 'launch.py'])
         ]),
     )
 
-    # -------------------------------------------------------------------------
-    # CHANGE 2: REMOVED static_tf_lidar Node entirely.
-    # The custom RTAB-Map launch now creates this static TF internally.
-    # Having it twice = TF tree conflict.
-    # -------------------------------------------------------------------------
-
-    # -------------------------------------------------------------------------
-    # T+0s — cmd_vel -> Kobuki bridge
-    # Nav2 publishes /cmd_vel; Kobuki listens on /commands/velocity.
-    # -------------------------------------------------------------------------
+    # ---- /cmd_vel_smoothed -> /commands/velocity ----
+    # Both gap_explorer and nav2's velocity_smoother publish to /cmd_vel_smoothed.
+    # We tap that directly instead of /cmd_vel_safe — collision_monitor was
+    # tripping constantly on lidar self-returns and we shelved it. Re-enable
+    # the safe path by switching the source to /cmd_vel_safe once the polygons
+    # / scan slice are dialed in so the monitor stops firing on the robot itself.
     cmd_vel_relay = Node(
         package='topic_tools',
         executable='relay',
         name='cmd_vel_to_kobuki_relay',
-        arguments=['/cmd_vel_safe', '/commands/velocity'],
+        arguments=['/cmd_vel_smoothed', '/commands/velocity'],
         output='screen',
     )
 
-    # -------------------------------------------------------------------------
-    # T+5s — RTAB-Map (custom launch with Grid/* params injected)
-    # CHANGE 3: switched from rtabmap_examples upstream to our custom version
-    # at mirror_slam_bringup/launch/lidar3d_assemble_custom.launch.py.
-    # That file is a copy of the upstream with Grid/MaxObstacleHeight=1.5
-    # and Grid/MaxGroundHeight=0.1 baked into the rtabmap_parameters dict.
-    # The base_link -> unilidar_lidar static TF is also created inside.
-    # -------------------------------------------------------------------------
+    # ---- RTAB-Map (custom launch) ----
+    # Local copy of upstream lidar3d_assemble.launch.py with two changes:
+    #   1) Grid/MaxObstacleHeight=1.5, Grid/MaxGroundHeight=0.1 baked in
+    #   2) base_link -> unilidar_lidar static TF created inline
+    # Don't add a separate static_transform_publisher for the lidar frame;
+    # you'll get duplicate edges in the TF tree.
     rtabmap = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -98,37 +73,35 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'lidar_topic': '/unilidar/cloud',
-            'imu_topic': '/unilidar/imu',
-            'frame_id': 'base_link',
+            'imu_topic':   '/unilidar/imu',
+            'frame_id':    'base_link',
         }.items(),
     )
-    rtabmap_delayed = TimerAction(period=5.0, actions=[rtabmap])
 
-    # -------------------------------------------------------------------------
-    # T+5s — pointcloud_to_laserscan (slice from /assembled_cloud)
-    # -------------------------------------------------------------------------
+    # ---- 3D cloud -> 2D scan for Nav2 ----
+    # Nav2's costmap obstacle layer + collision_monitor consume LaserScan,
+    # not PointCloud2. Slice between min/max_height to drop the floor and
+    # the ceiling/arm. Tighten range_min if you start seeing self-returns.
     pc_to_scan = Node(
         package='pointcloud_to_laserscan',
         executable='pointcloud_to_laserscan_node',
         name='pointcloud_to_laserscan',
         remappings=[
             ('cloud_in', '/assembled_cloud'),
-            ('scan', '/unilidar/scan'),
+            ('scan',     '/unilidar/scan'),
         ],
         parameters=[{
             'target_frame': 'base_link',
-            'min_height': -0.3,
-            'max_height': 0.75,
-            'range_min': 0.01,
-            'range_max': 20.0,
+            'min_height':   -0.3,
+            'max_height':    0.75,
+            'range_min':     0.01,
+            'range_max':    20.0,
         }],
         output='screen',
     )
-    pc_to_scan_delayed = TimerAction(period=5.0, actions=[pc_to_scan])
 
-    # -------------------------------------------------------------------------
-    # T+15s — Nav2 (no SLAM; RTAB-Map provides /map and TF)
-    # -------------------------------------------------------------------------
+    # ---- Nav2 ----
+    # No SLAM bundled — RTAB-Map provides /map and the map->odom TF.
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -137,31 +110,19 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'params_file': nav2_params_file,
-            'autostart': 'True',
+            'autostart':   'True',
         }.items(),
     )
-    nav2_delayed = TimerAction(period=10.0, actions=[nav2])
 
-    # -------------------------------------------------------------------------
-    # T+20s — RViz (Nav2 preconfigured)
-    # -------------------------------------------------------------------------
     rviz = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([
-                PathJoinSubstitution([
-                    nav2_bringup_share, 'launch', 'rviz_launch.py'
-                ])
-            ]),
-            launch_arguments={
-                'rviz_config': PathJoinSubstitution([
-                    mirror_slam_share, 'rviz', 'mirror_slam.rviz'
-                ]),
-            }.items(),
-        )
-    rviz_delayed = TimerAction(period=10.0, actions=[rviz])
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                nav2_bringup_share, 'launch', 'rviz_launch.py'
+            ])
+        ]),
+    )
 
-    # -------------------------------------------------------------------------
-    # T+25s (OPTIONAL) — gap_explorer wall-follower
-    # -------------------------------------------------------------------------
+    # ---- gap_explorer (off by default; pass gap_explorer:=true to enable) ----
     gap_explorer = Node(
         package='gap_explorer',
         executable='gap_explorer_node',
@@ -170,29 +131,21 @@ def generate_launch_description():
         output='screen',
         condition=IfCondition(LaunchConfiguration('gap_explorer')),
     )
-    gap_explorer_delayed = TimerAction(period=10.0, actions=[gap_explorer])
 
-    # -------------------------------------------------------------------------
+    # ---- Startup order ----
+    # Lidar driver and the cmd_vel relay come up at T+0. Then in sequence:
+    #   +5s   RTAB-Map               (needs /unilidar/cloud)
+    #   +5s   pointcloud_to_scan     (needs /assembled_cloud — queued; fine)
+    #   +10s  Nav2                   (needs /map, TF, /unilidar/scan)
+    #   +10s  RViz                   (start late so it sees everything)
+    #   +10s  gap_explorer           (optional; needs Nav2 fully up)
     return LaunchDescription([
         gap_explorer_arg,
-
-        # T+0s — sensors and basic relays (no dependencies)
         unitree_lidar,
-        # CHANGE 2: static_tf_lidar removed from this list too
         cmd_vel_relay,
-
-        # T+5s — RTAB-Map (depends on lidar)
-        rtabmap_delayed,
-
-        # T+10s — pointcloud_to_laserscan (depends on /assembled_cloud)
-        pc_to_scan_delayed,
-
-        # T+15s — Nav2 (depends on /map, TF, /unilidar/scan)
-        nav2_delayed,
-
-        # T+20s — RViz (start last so it sees everything)
-        rviz_delayed,
-
-        # T+25s — gap_explorer (optional)
-        gap_explorer_delayed,
+        TimerAction(period=5.0,  actions=[rtabmap]),
+        TimerAction(period=5.0,  actions=[pc_to_scan]),
+        TimerAction(period=10.0, actions=[nav2]),
+        TimerAction(period=10.0, actions=[rviz]),
+        TimerAction(period=10.0, actions=[gap_explorer]),
     ])

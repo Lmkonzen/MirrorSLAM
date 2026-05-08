@@ -3,6 +3,8 @@ Panels:
     Name: Displays
   - Class: rviz_common/Views
     Name: Views
+  - Class: nav2_rviz_plugins/Navigation 2
+    Name: Navigation 2
 Visualization Manager:
   Class: ""
   Displays:
@@ -14,7 +16,6 @@ Visualization Manager:
       Show Names: true
       Update Interval: 0
       Value: true
-
     - Class: rviz_default_plugins/Map
       Enabled: true
       Name: Global Map
@@ -22,7 +23,6 @@ Visualization Manager:
         Value: /map
         Reliability Policy: Reliable
       Value: true
-
     - Class: rviz_default_plugins/Map
       Enabled: true
       Name: Local Costmap
@@ -31,7 +31,6 @@ Visualization Manager:
         Reliability Policy: Reliable
       Value: true
       Color Scheme: costmap
-
     - Class: rviz_default_plugins/Map
       Enabled: true
       Name: Global Costmap
@@ -40,7 +39,6 @@ Visualization Manager:
         Reliability Policy: Reliable
       Value: true
       Color Scheme: costmap
-
     - Class: rviz_default_plugins/LaserScan
       Enabled: true
       Name: LaserScan
@@ -51,7 +49,6 @@ Visualization Manager:
       Size (m): 0.05
       Color Transformer: FlatColor
       Color: 255; 0; 0
-
     - Class: rviz_default_plugins/Path
       Enabled: true
       Name: Global Plan
@@ -60,7 +57,6 @@ Visualization Manager:
         Reliability Policy: Reliable
       Value: true
       Color: 0; 255; 0
-
     - Class: rviz_default_plugins/Path
       Enabled: true
       Name: Local Plan
@@ -69,7 +65,6 @@ Visualization Manager:
         Reliability Policy: Reliable
       Value: true
       Color: 0; 0; 255
-
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: Gap Debug Markers
@@ -77,7 +72,6 @@ Visualization Manager:
         Value: /gap_debug_markers
         Reliability Policy: Reliable
       Value: true
-
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
       Name: Detected Mirrors
@@ -88,11 +82,6 @@ Visualization Manager:
       Size (m): 0.1
       Color Transformer: FlatColor
       Color: 255; 0; 255
-
-    - Class: nav2_rviz_plugins/Nav2Panel
-      Name: Navigation 2
-      Value: true
-
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: map

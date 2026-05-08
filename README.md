@@ -1,375 +1,268 @@
 # MirrorSLAM
 
-A ROS2 system that drives a TurtleBot through an unknown space, follows walls
-using lidar, and uses a UR3e arm to physically probe surfaces. If the arm's
-motion fails (indicating a mirror or hard surface), the location is injected
-into the Nav2 costmap so the robot avoids it on future passes.
+Autonomous mirror detection through physical probing. A Kobuki-based mobile robot follows walls with a 3D lidar, then a UR3e robot arm physically probes apparent wall surfaces. Surfaces the arm makes contact with are real obstacles — mirrors, windows, or walls — and get injected into the Nav2 costmap as permanent obstacles. Surfaces the arm passes through without contact are confirmed open space: the lidar's apparent wall there was a phantom (typically a mirror reflecting a more distant surface) and the robot is free to navigate through.
 
-## Architecture
+## Project Requirements:
 
-| Package | Role |
-|---|---|
-| `gap_explorer` | TurtleBot brain — wall detection, Nav2 client, 5-state machine |
-| `ur3` | UR3e action server — receives `ProbeArm` goals, executes home→poke→home |
-| `gap_explorer_interfaces` | Shared `ProbeArm.action` definition |
-| `mirror_slam_bringup` | Nav2 params, world files, launch files |
-| `scripts/` | Bridge scripts and TurtleBot setup automation |
+1. Instructions: See Below
+2. ur3_movement node was written by hand, but claude was used for troubleshooting. Many packages had to be abridged to work in this project. Unilidar was not compaitble with Ubuntu 24.04... had to be modified. RTAB launcher did not handle params correctly... had to be modified. TB3 did not want to play nice with my gap_explorer, but we figured that out. Websocket was used to make system entirely wireless.
+3. Links/videos all embedded below.
 
-### State machine (gap_explorer)
+
+## How it works
+
+The robot operates in a five-state loop:
 
 `COLLECT` → `NAV` → `SETTLE` → `FOLLOW` → `PROBE` → `COLLECT`
 
-### Network architecture
+1. **COLLECT** — accumulate lidar scans and fit candidate wall segments
+2. **NAV** — drive to the standoff start point of the chosen wall via Nav2
+3. **SETTLE** — pause for SLAM and odometry to stabilize
+4. **FOLLOW** — pure-pursuit wall following along the locked wall line
+5. **PROBE** — extend the UR3e arm into the wall surface and measure contact
 
-```
-┌─────────────────────────────────┐         ┌──────────────────────────┐
-│           LAPTOP (Jazzy)        │         │   TURTLEBOT (Foxy)       │
-│                                 │  WiFi   │                          │
-│  rosbridge :9090  ◄─────────────┼────────►│  cmd_vel_bridge.py       │
-│  gap_explorer                   │         │  lidar_bridge.py         │
-│  SLAM / Nav2                    │         │  Unitree L1 lidar        │
-│  MoveIt + UR3e (sim or real)    │         │  Kobuki base             │
-│  RViz                           │         │                          │
-└─────────────────────────────────┘         └──────────────────────────┘
+The probe outcome is the discriminator. The arm extends toward the lidar-perceived wall position. If the gravity-compensated TCP wrench exceeds threshold, the arm has made contact — a physical surface (mirror, window, or real wall) is at that location. The position is published on `/detected_mirrors` and injected into the Nav2 costmap, and the robot avoids it on every subsequent pass. If the arm completes its full extension without contact, the lidar return was a phantom: the apparent wall is actually open space and is safe to navigate through.
 
-Laptop → /commands/velocity → TurtleBot (drive commands)
-TurtleBot → /unilidar/cloud, /unilidar/imu → Laptop (lidar data)
-```
+Contact detection runs in software using the UR controller's force/torque estimate, with thresholds tuned below the protective-stop limit so the arm reacts cleanly without latching the controller.
 
-### Machines
+## Demos
 
-| Machine | IP | ROS2 |
-|---|---|---|
-| Laptop | 10.5.15.42 | Jazzy |
-| turtle-one | 10.5.12.184 | Foxy |
-| UR3e arm | 10.3.4.10 | — |
+### Arm contact detection
+
+<video src="docs/media/ArmDetection.mp4" controls width="700"></video>
+
+### Full system trial run
+
+<video src="docs/media/TurtleBotLaunch.mp4" controls width="700"></video>
+
+## Hardware
+
+| Component | Details |
+|---|---|
+| Mobile base | Kobuki (TurtleBot 2 chassis) |
+| 3D lidar | Unitree L1 |
+| Robot arm | Universal Robots UR3e |
+| Laptop | ROS 2 Jazzy |
+
+The laptop runs SLAM, Nav2, MoveIt, and the autonomy stack. The TurtleBot runs the lidar driver and Kobuki base driver, bridging topics over WiFi via rosbridge.
+
+## Packages
+
+| Package | Role |
+|---|---|
+| `gap_explorer` | Wall detection, Nav2 client, five-state autonomy machine |
+| `ur3` | UR3e action server with active contact monitoring |
+| `gap_explorer_interfaces` | `ProbeArm.action` definition |
+| `mirror_slam_bringup` | Launch files, Nav2 params, RTAB-Map config |
 
 ---
+## Project Components
 
-## Build (laptop)
+Mapping of required components to where they live in this repo. All paths
+relative to repo root.
+
+### MoveIt (Written by hand, advice given by Claude)
+The arm probe is driven entirely through MoveIt's MoveGroup action.
+- [`ur3/ur3/ur3_movement.py`](ur3/ur3/ur3_movement.py) — `_move()` builds a
+  `MotionPlanRequest` with joint constraints and executes it via the
+  `MoveGroup` action client. Goal cancellation on contact also flows
+  through this client.
+
+### Nav2
+- [`gap_explorer/gap_explorer/gap_explorer_node.py`](gap_explorer/gap_explorer/gap_explorer_node.py)
+  — `send_nav_goal()` is the NavigateToPose action client; `costmap_cb()`
+  ingests the local costmap for path-clearance checks.
+- [`mirror_slam_bringup/params/nav2_params.yaml`](mirror_slam_bringup/params/nav2_params.yaml)
+  — full Nav2 stack config: controller_server (DWB), planner_server (NavFn),
+  collision_monitor, velocity_smoother, both costmaps with the custom
+  `mirror_layer`.
+- [`mirror_slam_bringup/launch/mirror_slam_full.launch.py`](mirror_slam_bringup/launch/mirror_slam_full.launch.py)
+  — bringup orchestration.
+
+### Perception
+- **Wall extraction** (lidar → 2D line segments): `scan_points_robot()`,
+  `contiguous_segments()`, `fit_segment()` (PCA line fit with RMSE gate),
+  and `select_best_wall()` in
+  [`gap_explorer_node.py`](gap_explorer/gap_explorer/gap_explorer_node.py).
+- **3D SLAM**: RTAB-Map's `lidar3d_assemble` pipeline, customized to
+  inject Grid/* parameters and the lidar static TF —
+  [`mirror_slam_bringup/launch/lidar3d_assemble_custom.launch.py`](mirror_slam_bringup/launch/lidar3d_assemble_custom.launch.py).
+- **3D-to-2D slice for Nav2**: `pointcloud_to_laserscan` node in the
+  bringup launch.
+
+### Custom Components
+- **Mirror detection through physical probing** — the central novel
+  behavior. Probe outcome (contact vs. no-contact) re-classifies lidar
+  returns and injects mirrors back into navigation.
+  Lives in `finish_probe()` and `remember_mirror()` in
+  [`gap_explorer_node.py`](gap_explorer/gap_explorer/gap_explorer_node.py).
+- **Mirror costmap layer** — detected mirrors are republished as a
+  `PointCloud2` on `/detected_mirrors` (`_publish_mirror_cloud()`) and
+  consumed by a dedicated `nav2_costmap_2d::ObstacleLayer` named
+  `mirror_layer` in both local and global costmaps.
+- **Force/torque-based contact monitoring** — software-side contact
+  detection on the UR3e's gravity-compensated wrench, faster and more
+  controllable than the hardware protective stop. See
+  [`ur3/ur3/ur3_movement.py`](ur3/ur3/ur3_movement.py),
+  `_wrench_cb` and the `_move()` poll loop.
+- **Custom action interface**:
+  [`gap_explorer_interfaces/action/ProbeArm.action`](gap_explorer_interfaces/action/ProbeArm.action).
+
+### Node Written Withthe assistance of Claude
+[`gap_explorer/gap_explorer/gap_explorer_node.py`](gap_explorer/gap_explorer/gap_explorer_node.py)
+— ~1300 lines. The full five-state autonomy machine, lidar-based wall
+fitting and tracking, locked-wall pure-pursuit follower with safety
+bail-out, exploration goal selection over the costmap, completed-wall
+and mirror memory with canonical signatures, and Nav2/probe action
+clients. Nothing in here is from a tutorial or template.
+
+## Setup
+
+### 1. Clone
 
 ```bash
+cd ~/ros2_ws/src
+git clone https://github.com/Lmkonzen/Mirror_SLAM.git
 cd ~/ros2_ws
-colcon build --packages-select \
-    gap_explorer_interfaces ur3 gap_explorer mirror_slam_bringup
+```
+
+### 2. Build (laptop)
+
+```bash
+MAKEFLAGS="-j1" colcon build --symlink-install \
+    --parallel-workers 1 --executor sequential \
+    --packages-select gap_explorer_interfaces ur3 gap_explorer mirror_slam_bringup
 source install/setup.bash
 ```
 
----
+Single-threaded build is required to avoid OOM on the laptop.
 
-## New TurtleBot Setup
+### 3. Configure the TurtleBot (one-time)
 
-One-time setup for a fresh TurtleBot. This installs the lidar package,
-bridge scripts, udev rules, and disables lid-close suspend.
-
-### From the laptop:
+From the laptop:
 
 ```bash
-# Get your laptop IP
-ip addr show wlp3s0 | grep "inet "
-
-# Copy the setup script to the TurtleBot
-scp ~/ros2_ws/src/Mirror_SLAM/scripts/setup_turtlebot.sh <user>@<TB_IP>:~/
-
-# SSH in and run it
-ssh <user>@<TB_IP>
+scp ~/ros2_ws/src/Mirror_SLAM/scripts/setup_turtlebot.sh turtle-one@<TB_IP>:~/
+ssh turtle-one@<TB_IP>
 chmod +x ~/setup_turtlebot.sh
 ./setup_turtlebot.sh <LAPTOP_IP>
 ```
 
-For turtle-one specifically:
-
-```bash
-scp ~/ros2_ws/src/Mirror_SLAM/scripts/setup_turtlebot.sh turtle-one@10.5.12.184:~/
-ssh turtle-one@10.5.12.184
-chmod +x ~/setup_turtlebot.sh
-./setup_turtlebot.sh 10.5.15.42
-```
-
-The script handles everything: lidar build, bridge scripts, serial symlinks,
-sleep disable. After it finishes, the TurtleBot is ready.
-
-### If the laptop IP changes:
-
-Re-run the setup script with the new IP, or manually edit both files:
-
-```bash
-nano ~/ros_bridge/cmd_vel_bridge.py   # change LAPTOP_IP
-nano ~/ros_bridge/lidar_bridge.py     # change LAPTOP_IP
-```
+The script installs the rosbridge client scripts. Run once per TurtleBot.
 
 ---
 
-# Launch Sequence
+## Launch
 
-## Step 1 — Laptop: start rosbridge
+Eight terminals: one for rosbridge, four SSH'd into the TurtleBot, three on the laptop for the arm and autonomy stack.
+
+### Laptop terminal 1 — rosbridge
 
 ```bash
-# Laptop Terminal 1
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 ```
 
-Leave running. All bridges share this single WebSocket on port 9090.
-
----
-
-## Step 2 — TurtleBot: start all robot-side processes (4 SSH sessions)
+### TurtleBot SSH terminals
 
 ```bash
-# SSH Terminal 1 — Unitree lidar
-ssh turtle-one@10.5.12.184
+# SSH 1 — lidar driver
+ssh turtle-one@<TB_IP>
 source /opt/ros/foxy/setup.bash
-source ~/unilidar_sdk/unitree_lidar_ros2/install/setup.bash
+source ~/unilidar_ws/src/unilidar_sdk/unitree_lidar_ros2/install/setup.bash
 ros2 launch unitree_lidar_ros2 launch.py
 ```
 
 ```bash
-# SSH Terminal 2 — Lidar bridge (TB → laptop)
-ssh turtle-one@10.5.12.184
+# SSH 2 — lidar bridge to laptop
+ssh turtle-one@<TB_IP>
 source /opt/ros/foxy/setup.bash
-source ~/unilidar_sdk/unitree_lidar_ros2/install/setup.bash
 python3 ~/ros_bridge/lidar_bridge.py
 ```
 
 ```bash
-# SSH Terminal 3 — Cmd vel bridge (laptop → TB)
-ssh turtle-one@10.5.12.184
+# SSH 3 — cmd_vel bridge from laptop
+ssh turtle-one@<TB_IP>
 source /opt/ros/foxy/setup.bash
 python3 ~/ros_bridge/cmd_vel_bridge.py
 ```
 
 ```bash
-# SSH Terminal 4 — Kobuki base
-ssh turtle-one@10.5.12.184
+# SSH 4 — Kobuki base driver
+ssh turtle-one@<TB_IP>
 source /opt/ros/foxy/setup.bash
 source ~/kobuki_ws_2/install/setup.bash
-ros2 launch kobuki_node kobuki_node-launch.py device_port:=/dev/kobuki
+ros2 launch kobuki_node kobuki_node-launch.py \
+    device_port:=/dev/kobuki publish_tf:=false
 ```
 
----
+### Laptop terminal 2 — UR3e driver
 
-## Step 3 — Laptop: verify bridge
+Real arm:
 
 ```bash
-# Laptop Terminal 2
-ros2 topic list | grep -E "unilidar|commands"
-```
-
-Expected:
-
-```
-/commands/velocity
-/unilidar/cloud
-/unilidar/imu
-```
-
-Quick drive test:
-
-```bash
-ros2 topic pub --once /commands/velocity geometry_msgs/msg/Twist \
-  "{linear: {x: 0.05}, angular: {z: 0.0}}"
-```
-
-The Kobuki should twitch forward.
-
----
-
-## Step 4 — Laptop: start UR3e arm
-
-Choose **one** of the two options below.
-
-### Terminal 3.1 — Simulated arm (mock hardware)
-
-```bash
-# Laptop Terminal 3
 cd ~/ros2_ws && source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
-    ur_type:=ur3e use_mock_hardware:=true robot_ip:=0.0.0.0 \
-    launch_rviz:=false
+    ur_type:=ur3e robot_ip:=<ARM_IP> launch_rviz:=false
 ```
 
-### Terminal 3.2 — Real arm
+Then start the External Control URCap from the UR teach pendant.
+
+Simulated arm (no hardware):
 
 ```bash
-# Laptop Terminal 3
-cd ~/ros2_ws && source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
-    ur_type:=ur3e robot_ip:=10.3.4.10 launch_rviz:=false
+    ur_type:=ur3e use_mock_hardware:=true robot_ip:=0.0.0.0 launch_rviz:=false
 ```
 
-Then start the External Control URCap from the teach pendant.
-
----
-
-## Step 5 — Laptop: start MoveIt
-
-Same for both sim and real:
+### Laptop terminal 3 — MoveIt
 
 ```bash
-# Laptop Terminal 4
 cd ~/ros2_ws && source install/setup.bash
 ros2 launch ur_moveit_config ur_moveit.launch.py \
-    ur_type:=ur3e launch_rviz:=true \
-    warehouse_sqlite_path:=$HOME/.ros/warehouse_ros.db
+    ur_type:=ur3e launch_rviz:=true
 ```
 
-Wait for `"You can start planning now!"`.
+Wait for `You can start planning now!` in the log.
 
----
-
-## Step 6 — Laptop: start probe server
+### Laptop terminal 4 — probe server
 
 ```bash
-# Laptop Terminal 5
 cd ~/ros2_ws && source install/setup.bash
 ros2 run ur3 probe_server
 ```
 
-Wait for `"probe_arm action server ready."`.
+Wait for `probe_arm action server ready.`.
 
-Optional — test the arm manually:
-
-```bash
-ros2 action send_goal --feedback /probe_arm \
-    gap_explorer_interfaces/action/ProbeArm "{}"
-```
-
-Expected feedback: `homing` → `poking` → `returning` → `done`
-
----
-
-## Step 7 — Laptop: start SLAM / Nav2
+### Laptop terminal 5 — SLAM, Nav2, RViz
 
 ```bash
-# Laptop Terminal 6
 cd ~/ros2_ws && source install/setup.bash
 ros2 launch mirror_slam_bringup mirror_slam_full.launch.py
 ```
 
-Wait for Nav2 to come up. Verify:
+Brings up RTAB-Map, the pointcloud-to-laserscan slicer, Nav2, the velocity smoother and collision monitor, the cmd_vel-to-Kobuki relay, and RViz. Wait for Nav2 to reach `active` before continuing.
+
+### Laptop terminal 6 — autonomy
 
 ```bash
-ros2 lifecycle get /bt_navigator       # should be: active [3]
-ros2 lifecycle get /controller_server   # should be: active [3]
-```
-
-Test with a manual Nav2 goal in RViz before starting autonomy.
-
----
-
-## Step 8 — Laptop: start gap_explorer
-
-```bash
-# Laptop Terminal 7
 cd ~/ros2_ws && source install/setup.bash
 ros2 run gap_explorer gap_explorer --ros-args -p scan_topic:=/unilidar/scan
 ```
 
-Expected log sequence:
+The robot begins exploring. State transitions appear in the log:
 
 ```
 COLLECT → NAV → SETTLE → FOLLOW → PROBE → COLLECT
 ```
 
-The robot will autonomously explore, follow walls, and probe surfaces.
+Mirror detections accumulate on `/detected_mirrors` and persist in the Nav2 costmap for the rest of the session.
 
----
+## References
 
-## Velocity topic relay
+- [UR ROS2 Driver](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver) — driver and `ur_moveit_config` package used here.
+- [RTAB-Map](https://github.com/introlab/rtabmap_ros) — SLAM backbone (`lidar3d_assemble` example).
+- [Nav2](https://docs.nav2.org/) — navigation stack.
+- [Unitree L1 SDK](https://github.com/unitreerobotics/unilidar_sdk) — lidar driver source.
 
-The Kobuki listens on `/commands/velocity`. If gap_explorer or Nav2 publishes
-on `/cmd_vel`, relay it:
-
-```bash
-ros2 run topic_tools relay /cmd_vel /commands/velocity
-```
-
-If your launch file already includes this relay, do not start a duplicate.
-
----
-
-## Shutdown order
-
-Stop in reverse:
-
-1. gap_explorer
-2. SLAM / Nav2
-3. Probe server
-4. MoveIt
-5. UR3e driver
-6. Kobuki base (SSH)
-7. Command bridge (SSH)
-8. Lidar bridge (SSH)
-9. Unitree lidar (SSH)
-10. rosbridge (laptop)
-
-Use `Ctrl-C` in each terminal.
-
-Nuclear reset:
-
-```bash
-# Laptop
-pkill -f ros2; pkill -f rosbridge; pkill -f gazebo; pkill -f gz
-ros2 daemon stop && ros2 daemon start
-```
-
----
-
-## Useful commands
-
-```bash
-# View TF tree
-ros2 run tf2_tools view_frames
-
-# Check controllers
-ros2 control list_controllers
-
-# Monitor lidar rate
-ros2 topic hz /unilidar/cloud
-
-# Check Nav2 status
-ros2 action list | grep navigate
-
-# Watch mirror detections
-ros2 topic echo /detected_mirrors
-
-# Check probe action server
-ros2 action list | grep probe_arm
-
-# Debug velocity flow
-ros2 topic echo /cmd_vel
-ros2 topic echo /commands/velocity
-```
-
----
-
-## Troubleshooting
-
-**Rosbridge "Address already in use":**
-`pkill -f rosbridge` then relaunch.
-
-**No lidar topics on laptop:**
-Check: (1) rosbridge running on laptop, (2) lidar node running on TB,
-(3) lidar_bridge.py running on TB, (4) correct laptop IP in bridge script.
-
-**Kobuki doesn't move:**
-Check `ros2 topic echo /commands/velocity` on laptop. Verify cmd_vel_bridge.py
-and Kobuki node are both running on TB.
-
-**Serial permission denied on TB:**
-`sudo chmod 666 /dev/ttyUSB*` or verify udev rules: `ls -l /dev/lidar /dev/kobuki`
-
-**Serial ports swapped after reboot:**
-Use `/dev/lidar` and `/dev/kobuki` symlinks instead of `/dev/ttyUSBx`.
-
-**Arm driver timeout (real hardware):**
-The 1-second RTDE timeout is hardcoded. Requires low-latency connection.
-Direct ethernet preferred. WiFi works intermittently.
-
-**Nav2 goal succeeds but FOLLOW doesn't move:**
-Check `ros2 topic echo /cmd_vel` during FOLLOW. If empty, gap_explorer may
-be aborting. Check logs for `FOLLOW step:` debug messages.
-
-**TurtleBot sleeps with lid closed:**
-Re-run `setup_turtlebot.sh` or manually edit `/etc/systemd/logind.conf`
-and `sudo systemctl mask sleep.target suspend.target`.
+To start and connect to the UR3e, follow the External Control URCap
+setup in the UR ROS2 Driver docs.

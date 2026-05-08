@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#Modified from initial version to support desired bringup parameters
 """
 MirrorSLAM custom version of rtabmap_examples/lidar3d_assemble.launch.py.
 
@@ -10,6 +11,13 @@ must be set during node construction, not after.
 Customizations marked with `# CUSTOM` comments:
   - Grid/MaxObstacleHeight: 1.5  (skip ceiling)
   - Grid/MaxGroundHeight: 0.1    (treat below 10cm as ground/free)
+  - Icp/MaxTranslation: 0.2     (reject scan jumps > 20cm)
+  - Icp/Iterations: 30          (more ICP iterations for convergence)
+  - Icp/MaxCorrespondenceDistance: 0.5 (tighter point matching)
+  - Odom/Strategy: 0            (Frame-to-Map for hallway stability)
+  - Odom/FilteringStrategy: 1   (Kalman filter on odom output)
+  - RGBD/OptimizeMaxError: 1.0  (reject bad loop closures)
+  - Rtabmap/LoopThr: 0.11       (stricter loop closure threshold)
 
 Also: the static TF for base_link -> unilidar_lidar with z=0.18 (not the 0.15
 default in upstream).
@@ -55,8 +63,6 @@ def launch_setup(context: LaunchContext, *args, **kwargs):
     deskewing_slerp = LaunchConfiguration('deskewing_slerp').perform(context)
     deskewing_slerp = deskewing_slerp == 'true' or deskewing_slerp == 'True'
 
-    max_correspondence_distance = voxel_size_value * 10.0
-
     shared_parameters = {
         'use_sim_time': use_sim_time,
         'frame_id': frame_id,
@@ -64,13 +70,13 @@ def launch_setup(context: LaunchContext, *args, **kwargs):
         'approx_sync': rgbd_image_used,
         'wait_for_transform': 0.2,
         'Icp/PointToPlane': 'true',
-        'Icp/Iterations': '10',
+        'Icp/Iterations': '30',                    # CUSTOM was 10 — more iterations for convergence
         'Icp/VoxelSize': str(voxel_size_value),
         'Icp/Epsilon': '0.001',
         'Icp/PointToPlaneK': '20',
         'Icp/PointToPlaneRadius': '0',
-        'Icp/MaxTranslation': '3',
-        'Icp/MaxCorrespondenceDistance': str(max_correspondence_distance),
+        'Icp/MaxTranslation': '0.2',               # CUSTOM was 3 — reject jumps > 20cm per scan
+        'Icp/MaxCorrespondenceDistance': '0.5',     # CUSTOM was voxel*10 — tighter point matching
         'Icp/Strategy': '1',
         'Icp/OutlierRatio': '0.7',
     }
@@ -81,6 +87,8 @@ def launch_setup(context: LaunchContext, *args, **kwargs):
         'odom_frame_id': 'odom',
         'guess_frame_id': fixed_frame_id,
         'Odom/ScanKeyFrameThr': '0.4',
+        'Odom/Strategy': '0',                      # CUSTOM Frame-to-Map (more stable in hallways)
+        'Odom/FilteringStrategy': '1',              # CUSTOM Kalman filter on odom output
         'OdomF2M/ScanSubtractRadius': str(voxel_size_value),
         'OdomF2M/ScanMaxSize': '15000',
         'OdomF2M/BundleAdjustment': 'false',
@@ -96,11 +104,14 @@ def launch_setup(context: LaunchContext, *args, **kwargs):
         'odom_frame_id': (external_odom_frame_id if external_odom_frame_id else ""),
         'odom_sensor_sync': True,
         'Rtabmap/DetectionRate': '0',
+        'Rtabmap/LoopThr': '0.11',                 # CUSTOM stricter loop closure threshold
         'RGBD/ProximityMaxGraphDepth': '0',
         'RGBD/ProximityPathMaxNeighbors': '1',
         'RGBD/AngularUpdate': '0.05',
         'RGBD/LinearUpdate': '0.05',
         'RGBD/CreateOccupancyGrid': 'true',
+        'RGBD/OptimizeMaxError': '1.0',             # CUSTOM reject loop closures with >1m error
+        'RGBD/NeighborLinkRefining': 'true',        # CUSTOM refine sequential links
         'Mem/NotLinkedNodesKept': 'false',
         'Mem/STMSize': '30',
         'Reg/Strategy': '1',
@@ -108,7 +119,7 @@ def launch_setup(context: LaunchContext, *args, **kwargs):
 
         # CUSTOM — Grid params for occupancy grid generation:
         'Grid/MaxObstacleHeight': '1.5',
-        'Grid/RayTracing': 'true',           # ADD: clears free space along ray paths
+        'Grid/RayTracing': 'true',
         'Grid/MaxGroundHeight': '0.1',
     }
 
