@@ -29,11 +29,11 @@ Contact detection runs in software using the UR controller's force/torque estima
 
 ### Arm contact detection
 
-<video src="docs/media/ArmDetection.mp4" controls width="700"></video>
+https://github.com/user-attachments/assets/bdcbc0aa-f6e7-40ab-a255-3e66a13fc9f9
 
 ### Full system trial run
 
-<video src="docs/media/TurtleBotLaunch.mp4" controls width="700"></video>
+https://github.com/user-attachments/assets/9a4f64f2-dd54-4281-bfcc-a7e6f507c09e
 
 ## Hardware
 
